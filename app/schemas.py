@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
@@ -57,3 +57,17 @@ class AggregationRequest(BaseModel):
 class AggregationResult(BaseModel):
     group: Dict[str, Any]
     value: float | int
+
+class WebhookBase(BaseModel):
+    module_id: Optional[int] = None
+    url: HttpUrl
+    event_type: str = "event.created"
+
+class WebhookCreate(WebhookBase):
+    pass
+
+class Webhook(WebhookBase):
+    id: int
+    user_id: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)

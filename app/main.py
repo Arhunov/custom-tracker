@@ -1,13 +1,13 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Security, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, Security, UploadFile, File, BackgroundTasks
 from fastapi.security import APIKeyHeader
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text, select, func, cast, Numeric
+from sqlalchemy import text, select, func, cast, Numeric, or_
 from .database import get_db, engine, Base
 from contextlib import asynccontextmanager
 from . import models, schemas
-from typing import List
-from datetime import datetime
+from typing import List, Dict, Any
+from datetime import datetime, timezone
 from sqlalchemy import func
 import jsonschema
 import os
@@ -15,6 +15,11 @@ import secrets
 import csv
 import io
 import json
+import httpx
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
@@ -110,11 +115,97 @@ async def list_modules(
     modules = result.scalars().all()
     return modules
 
+# Webhooks API
+
+@app.post("/webhooks", response_model=schemas.Webhook, status_code=status.HTTP_201_CREATED)
+async def create_webhook(
+    webhook: schemas.WebhookCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # If module_id is provided, verify it exists
+    if webhook.module_id:
+        stmt = select(models.Module).where(models.Module.id == webhook.module_id)
+        result = await db.execute(stmt)
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Module not found")
+
+    new_webhook = models.Webhook(
+        user_id=current_user.id,
+        module_id=webhook.module_id,
+        url=str(webhook.url),
+        event_type=webhook.event_type
+    )
+    db.add(new_webhook)
+    await db.commit()
+    await db.refresh(new_webhook)
+    return new_webhook
+
+@app.get("/webhooks", response_model=List[schemas.Webhook])
+async def list_webhooks(
+    skip: int = 0,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    stmt = select(models.Webhook).where(models.Webhook.user_id == current_user.id).offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    webhooks = result.scalars().all()
+    return webhooks
+
+@app.delete("/webhooks/{webhook_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_webhook(
+    webhook_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    stmt = select(models.Webhook).where(models.Webhook.id == webhook_id, models.Webhook.user_id == current_user.id)
+    result = await db.execute(stmt)
+    webhook = result.scalar_one_or_none()
+
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    await db.delete(webhook)
+    await db.commit()
+
+async def trigger_webhooks(event_id: int, module_id: int, user_id: int, payload: Dict[str, Any]):
+    try:
+        async with AsyncSession(engine) as session:
+            # Find webhooks: belonging to the user AND (module_id matches OR module_id is null)
+            stmt = select(models.Webhook).where(
+                models.Webhook.user_id == user_id,
+                or_(models.Webhook.module_id == module_id, models.Webhook.module_id.is_(None))
+            )
+            result = await session.execute(stmt)
+            webhooks = result.scalars().all()
+
+            if not webhooks:
+                return
+
+            async with httpx.AsyncClient() as client:
+                for webhook in webhooks:
+                    try:
+                        data = {
+                            "event_id": event_id,
+                            "module_id": module_id,
+                            "user_id": user_id,
+                            "payload": payload,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "event_type": webhook.event_type
+                        }
+                        await client.post(webhook.url, json=data, timeout=5.0)
+                    except Exception as e:
+                        logger.error(f"Failed to trigger webhook {webhook.id} to {webhook.url}: {e}")
+    except Exception as e:
+        logger.error(f"Error in trigger_webhooks: {e}")
+
 # Events API
 
 @app.post("/events", response_model=schemas.Event, status_code=status.HTTP_201_CREATED)
 async def create_event(
     event: schemas.EventCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -140,6 +231,15 @@ async def create_event(
     db.add(new_event)
     await db.commit()
     await db.refresh(new_event)
+
+    background_tasks.add_task(
+        trigger_webhooks,
+        event_id=new_event.id,
+        module_id=new_event.module_id,
+        user_id=new_event.user_id,
+        payload=new_event.payload
+    )
+
     return new_event
 
 @app.get("/events/stats", response_model=List[schemas.EventStats])

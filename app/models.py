@@ -37,3 +37,16 @@ class Event(Base):
 
     # Relationship to Module
     module: Mapped["Module"] = relationship()
+
+class Webhook(Base):
+    __tablename__ = 'webhooks'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
+    module_id: Mapped[Optional[int]] = mapped_column(ForeignKey('modules.id'), nullable=True)
+    url: Mapped[str] = mapped_column(String)
+    event_type: Mapped[str] = mapped_column(String, default="event.created")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    module: Mapped[Optional["Module"]] = relationship()
+    user: Mapped["User"] = relationship()

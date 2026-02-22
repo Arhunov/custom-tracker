@@ -85,3 +85,39 @@ def test_aggregate_table():
         assert "Value" in result.stdout
         assert "2023-01-01" in result.stdout
         assert "10" in result.stdout
+
+def test_create_webhook():
+    with patch("httpx.Client") as mock_client:
+        mock_instance = mock_client.return_value
+        mock_instance.__enter__.return_value = mock_instance
+        mock_instance.post.return_value = MagicMock(status_code=201, json=lambda: {"id": 1, "url": "http://example.com", "module_id": None})
+
+        result = runner.invoke(app, ["create-webhook", "http://example.com"])
+        assert result.exit_code == 0
+        assert "created successfully" in result.stdout
+
+        mock_instance.post.assert_called_once()
+
+def test_list_webhooks():
+    mock_webhooks = [
+        {"id": 1, "url": "http://example.com", "module_id": 1, "event_type": "event.created"}
+    ]
+    with patch("httpx.Client") as mock_client:
+        mock_instance = mock_client.return_value
+        mock_instance.__enter__.return_value = mock_instance
+        mock_instance.get.return_value = MagicMock(status_code=200, json=lambda: mock_webhooks)
+
+        result = runner.invoke(app, ["list-webhooks"])
+        assert result.exit_code == 0
+        assert "Webhooks" in result.stdout
+        assert "http://example.com" in result.stdout
+
+def test_delete_webhook():
+    with patch("httpx.Client") as mock_client:
+        mock_instance = mock_client.return_value
+        mock_instance.__enter__.return_value = mock_instance
+        mock_instance.delete.return_value = MagicMock(status_code=204)
+
+        result = runner.invoke(app, ["delete-webhook", "1"])
+        assert result.exit_code == 0
+        assert "deleted successfully" in result.stdout

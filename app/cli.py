@@ -347,5 +347,81 @@ def import_data(
     except Exception as e:
         console.print(f"[red]An error occurred: {str(e)}[/red]")
 
+@app.command()
+def create_webhook(
+    url: str = typer.Argument(..., help="Webhook URL"),
+    module_id: Optional[int] = typer.Option(None, help="Module ID to filter by"),
+    event_type: str = typer.Option("event.created", help="Event type to trigger on")
+):
+    """
+    Register a new webhook.
+    """
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+    data = {
+        "url": url,
+        "module_id": module_id,
+        "event_type": event_type
+    }
+    # Remove None values
+    data = {k: v for k, v in data.items() if v is not None}
+
+    with httpx.Client(headers=headers) as client:
+        response = client.post(f"{API_URL}/webhooks", json=data)
+        if response.status_code == 201:
+            console.print(f"[green]Webhook created successfully![/green]")
+            console.print_json(data=response.json())
+        else:
+            console.print(f"[red]Error creating webhook: {response.status_code}[/red]")
+            console.print(response.text)
+
+@app.command()
+def list_webhooks():
+    """
+    List all registered webhooks for the user.
+    """
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+    try:
+        with httpx.Client(headers=headers) as client:
+            response = client.get(f"{API_URL}/webhooks")
+            if response.status_code == 200:
+                webhooks = response.json()
+                table = Table(title="Webhooks", show_lines=True)
+                table.add_column("ID", justify="right", style="cyan", no_wrap=True)
+                table.add_column("Module ID", justify="right", style="magenta")
+                table.add_column("URL", style="green", overflow="fold")
+                table.add_column("Event Type", style="yellow")
+
+                for webhook in webhooks:
+                    table.add_row(
+                        str(webhook["id"]),
+                        str(webhook.get("module_id", "") or "All"),
+                        webhook["url"],
+                        webhook["event_type"]
+                    )
+                console.print(table)
+            else:
+                console.print(f"[red]Error listing webhooks: {response.status_code}[/red]")
+    except httpx.ConnectError:
+        console.print(f"[red]Could not connect to API at {API_URL}[/red]")
+
+@app.command()
+def delete_webhook(webhook_id: int = typer.Argument(..., help="Webhook ID")):
+    """
+    Delete a webhook.
+    """
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+    try:
+        with httpx.Client(headers=headers) as client:
+            response = client.delete(f"{API_URL}/webhooks/{webhook_id}")
+            if response.status_code == 204:
+                console.print(f"[green]Webhook {webhook_id} deleted successfully![/green]")
+            elif response.status_code == 404:
+                 console.print(f"[red]Webhook {webhook_id} not found.[/red]")
+            else:
+                console.print(f"[red]Error deleting webhook: {response.status_code}[/red]")
+                console.print(response.text)
+    except httpx.ConnectError:
+        console.print(f"[red]Could not connect to API at {API_URL}[/red]")
+
 if __name__ == "__main__":
     app()

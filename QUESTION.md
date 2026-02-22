@@ -1,1 +1,0 @@
-The AGENT.md file mentioned in the task description is missing. Please provide the content of AGENT.md or the schema definitions for the 'Event' and 'Module' entities.

@@ -195,5 +195,90 @@ def aggregate(
     except httpx.ConnectError:
         console.print(f"[red]Could not connect to API at {API_URL}[/red]")
 
+@app.command()
+def export(
+    filename: Optional[str] = typer.Option(None, help="Output filename"),
+    format: str = typer.Option("json", help="Format: json or csv"),
+    start_date: Optional[datetime] = typer.Option(None, formats=["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"], help="Start date (YYYY-MM-DD)"),
+    end_date: Optional[datetime] = typer.Option(None, formats=["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"], help="End date (YYYY-MM-DD)"),
+    module_id: Optional[int] = typer.Option(None, help="Filter by Module ID")
+):
+    """
+    Export data to a file.
+    """
+    params = {"format": format}
+    if start_date:
+        params["start_date"] = start_date.isoformat()
+    if end_date:
+        params["end_date"] = end_date.isoformat()
+    if module_id:
+        params["module_id"] = module_id
+
+    try:
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
+        with httpx.Client(headers=headers, timeout=60.0) as client:
+            # Using stream=True for large files
+            with client.stream("GET", f"{API_URL}/data/export", params=params) as response:
+                if response.status_code == 200:
+                    # Determine filename if not provided
+                    if not filename:
+                        content_disposition = response.headers.get("content-disposition")
+                        if content_disposition and "filename=" in content_disposition:
+                            filename = content_disposition.split("filename=")[1].strip('"')
+                        else:
+                            filename = f"export_{datetime.now().strftime('%Y%m%d%H%M%S')}.{format}"
+
+                    with open(filename, "wb") as f:
+                        for chunk in response.iter_bytes():
+                            f.write(chunk)
+
+                    console.print(f"[green]Data exported successfully to {filename}[/green]")
+                else:
+                    console.print(f"[red]Error exporting data: {response.status_code}[/red]")
+                    console.print(response.read().decode()) # read remaining content
+    except httpx.ConnectError:
+        console.print(f"[red]Could not connect to API at {API_URL}[/red]")
+    except Exception as e:
+        console.print(f"[red]An error occurred: {str(e)}[/red]")
+
+@app.command(name="import")
+def import_data(
+    filename: str = typer.Argument(..., help="File to import")
+):
+    """
+    Import data from a file (JSON or CSV).
+    """
+    if not os.path.exists(filename):
+        console.print(f"[red]File not found: {filename}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
+        # We need to determine content type or just let httpx handle it?
+        # httpx handles file uploads if we pass 'files'
+
+        with open(filename, "rb") as f:
+            files = {"file": (os.path.basename(filename), f)}
+            with httpx.Client(headers=headers, timeout=60.0) as client:
+                response = client.post(f"{API_URL}/data/import", files=files)
+
+                if response.status_code == 200:
+                    result = response.json()
+                    console.print("[green]Import completed![/green]")
+                    console.print(f"Success: {result['success_count']}")
+                    console.print(f"Failures: {result['failure_count']}")
+                    if result['errors']:
+                        console.print("[yellow]Errors (first 10):[/yellow]")
+                        for error in result['errors']:
+                            console.print(f"- {error}")
+                else:
+                    console.print(f"[red]Error importing data: {response.status_code}[/red]")
+                    console.print(response.text)
+
+    except httpx.ConnectError:
+        console.print(f"[red]Could not connect to API at {API_URL}[/red]")
+    except Exception as e:
+        console.print(f"[red]An error occurred: {str(e)}[/red]")
+
 if __name__ == "__main__":
     app()

@@ -11,3 +11,4 @@ jsonschema
 rich
 aiosqlite
 pytest-asyncio
+python-multipart

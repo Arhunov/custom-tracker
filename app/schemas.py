@@ -58,6 +58,20 @@ class AggregationResult(BaseModel):
     group: Dict[str, Any]
     value: float | int
 
+class CorrelationRequest(BaseModel):
+    module_1_id: int
+    target_1_key: str
+    module_2_id: int
+    target_2_key: str
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    group_by: GroupBy = GroupBy.DAY
+    operation: AggregationType = AggregationType.AVG
+
+class CorrelationResult(BaseModel):
+    correlation_coefficient: Optional[float]
+    data_points: int
+
 class WebhookBase(BaseModel):
     module_id: Optional[int] = None
     url: HttpUrl

@@ -27,6 +27,12 @@ class Event(EventBase):
     timestamp: datetime
     model_config = ConfigDict(from_attributes=True)
 
+class EventStats(BaseModel):
+    module_id: int
+    module_name: str
+    event_count: int
+    model_config = ConfigDict(from_attributes=True)
+
 class AggregationType(str, Enum):
     COUNT = "count"
     SUM = "sum"

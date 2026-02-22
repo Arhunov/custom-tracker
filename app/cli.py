@@ -2,9 +2,10 @@ import typer
 import httpx
 import json
 import os
-from typing import Optional
+from typing import Optional, List
 from rich.console import Console
 from rich.table import Table
+from datetime import datetime
 
 app = typer.Typer()
 console = Console()
@@ -130,6 +131,67 @@ def list_events(module_id: Optional[int] = None, user_id: Optional[int] = None):
                 console.print(table)
             else:
                 console.print(f"[red]Error listing events: {response.status_code}[/red]")
+    except httpx.ConnectError:
+        console.print(f"[red]Could not connect to API at {API_URL}[/red]")
+
+@app.command()
+def aggregate(
+    module_id: Optional[int] = typer.Option(None, help="Filter by Module ID"),
+    start_date: Optional[datetime] = typer.Option(None, formats=["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"], help="Start date (YYYY-MM-DD)"),
+    end_date: Optional[datetime] = typer.Option(None, formats=["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"], help="End date (YYYY-MM-DD)"),
+    group_by: Optional[List[str]] = typer.Option(None, help="Group by: module, day, week, month"),
+    operation: str = typer.Option("count", help="Operation: count, sum, avg, min, max"),
+    target_key: Optional[str] = typer.Option(None, help="Key in payload to aggregate on")
+):
+    """
+    Aggregate events.
+    """
+    # Build payload
+    data = {
+        "module_id": module_id,
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+        "group_by": group_by or [],
+        "operation": operation,
+        "target_key": target_key
+    }
+
+    # Remove None values
+    data = {k: v for k, v in data.items() if v is not None}
+
+    try:
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
+        with httpx.Client(headers=headers) as client:
+            response = client.post(f"{API_URL}/analytics/aggregate", json=data)
+
+            if response.status_code == 200:
+                results = response.json()
+                table = Table(title="Aggregation Results")
+
+                # Determine columns dynamically based on first result
+                if results:
+                    first_group = results[0]["group"]
+                    # Add grouping columns
+                    for key in first_group.keys():
+                        table.add_column(key.capitalize(), style="cyan")
+                    # Add value column
+                    table.add_column("Value", style="magenta")
+
+                    for item in results:
+                        row = []
+                        group = item["group"]
+                        for key in first_group.keys():
+                            row.append(str(group.get(key, "")))
+                        row.append(str(item["value"]))
+                        table.add_row(*row)
+                else:
+                    console.print("[yellow]No results found.[/yellow]")
+                    return
+
+                console.print(table)
+            else:
+                console.print(f"[red]Error aggregating events: {response.status_code}[/red]")
+                console.print(response.text)
     except httpx.ConnectError:
         console.print(f"[red]Could not connect to API at {API_URL}[/red]")
 

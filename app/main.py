@@ -6,6 +6,8 @@ from .database import get_db, engine, Base
 from contextlib import asynccontextmanager
 from . import models, schemas
 from typing import List
+from datetime import datetime
+from sqlalchemy import func
 import jsonschema
 import os
 import secrets
@@ -136,12 +138,37 @@ async def create_event(
     await db.refresh(new_event)
     return new_event
 
+@app.get("/events/stats", response_model=List[schemas.EventStats])
+async def get_event_stats(
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    stmt = select(
+        models.Module.id.label("module_id"),
+        models.Module.name.label("module_name"),
+        func.count(models.Event.id).label("event_count")
+    ).join(models.Event, models.Module.id == models.Event.module_id)
+
+    if start_date:
+        stmt = stmt.where(models.Event.timestamp >= start_date)
+    if end_date:
+        stmt = stmt.where(models.Event.timestamp <= end_date)
+
+    stmt = stmt.group_by(models.Module.id, models.Module.name)
+
+    result = await db.execute(stmt)
+    return result.all()
+
 @app.get("/events", response_model=List[schemas.Event])
 async def list_events(
     skip: int = 0,
     limit: int = 100,
     module_id: int | None = None,
     user_id: int | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -150,6 +177,10 @@ async def list_events(
         stmt = stmt.where(models.Event.module_id == module_id)
     if user_id:
         stmt = stmt.where(models.Event.user_id == user_id)
+    if start_date:
+        stmt = stmt.where(models.Event.timestamp >= start_date)
+    if end_date:
+        stmt = stmt.where(models.Event.timestamp <= end_date)
 
     stmt = stmt.order_by(models.Event.timestamp.desc()).offset(skip).limit(limit)
 

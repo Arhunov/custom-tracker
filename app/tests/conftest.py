@@ -16,7 +16,13 @@ test_engine = create_async_engine(
     poolclass=StaticPool,
 )
 
-TestingSessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=test_engine, class_=AsyncSession)
+TestingSessionLocal = async_sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=test_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
 
 @pytest.fixture(scope="session")
 def anyio_backend():

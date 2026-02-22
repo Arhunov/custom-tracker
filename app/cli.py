@@ -10,6 +10,49 @@ app = typer.Typer()
 console = Console()
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+TOKEN_FILE = ".token"
+
+def _save_token(token: str):
+    with open(TOKEN_FILE, "w") as f:
+        f.write(token)
+    try:
+        os.chmod(TOKEN_FILE, 0o600)
+    except Exception:
+        pass
+
+def _get_token() -> Optional[str]:
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "r") as f:
+            return f.read().strip()
+    return None
+
+@app.command()
+def register(username: str = typer.Option(..., prompt=True), password: str = typer.Option(..., prompt=True, hide_input=True)):
+    """
+    Register a new user.
+    """
+    with httpx.Client() as client:
+        response = client.post(f"{API_URL}/register", json={"username": username, "password": password})
+        if response.status_code == 201:
+            console.print(f"[green]User '{username}' created successfully![/green]")
+        else:
+            console.print(f"[red]Error creating user: {response.status_code}[/red]")
+            console.print(response.text)
+
+@app.command()
+def login(username: str = typer.Option(..., prompt=True), password: str = typer.Option(..., prompt=True, hide_input=True)):
+    """
+    Login and save the access token.
+    """
+    with httpx.Client() as client:
+        response = client.post(f"{API_URL}/token", data={"username": username, "password": password})
+        if response.status_code == 200:
+            token = response.json()["access_token"]
+            _save_token(token)
+            console.print(f"[green]Login successful! Token saved.[/green]")
+        else:
+            console.print(f"[red]Error logging in: {response.status_code}[/red]")
+            console.print(response.text)
 
 @app.command()
 def create_module(name: str, schema: str):
@@ -17,6 +60,11 @@ def create_module(name: str, schema: str):
     Register a new module.
     schema: JSON string of the schema.
     """
+    token = _get_token()
+    if not token:
+        console.print("[red]Not logged in. Please run 'login' first.[/red]")
+        raise typer.Exit(code=1)
+
     try:
         schema_dict = json.loads(schema)
     except json.JSONDecodeError:
@@ -24,8 +72,9 @@ def create_module(name: str, schema: str):
         raise typer.Exit(code=1)
 
     with httpx.Client() as client:
+        headers = {"Authorization": f"Bearer {token}"}
         # Note: In Pydantic model it's aliased as 'schema', so we send 'schema' key
-        response = client.post(f"{API_URL}/modules", json={"name": name, "schema": schema_dict})
+        response = client.post(f"{API_URL}/modules", json={"name": name, "schema": schema_dict}, headers=headers)
         if response.status_code == 201:
             console.print(f"[green]Module '{name}' created successfully![/green]")
             console.print(response.json())
@@ -38,9 +87,15 @@ def list_modules():
     """
     List all registered modules.
     """
+    token = _get_token()
+    if not token:
+        console.print("[red]Not logged in. Please run 'login' first.[/red]")
+        raise typer.Exit(code=1)
+
     try:
         with httpx.Client() as client:
-            response = client.get(f"{API_URL}/modules")
+            headers = {"Authorization": f"Bearer {token}"}
+            response = client.get(f"{API_URL}/modules", headers=headers)
             if response.status_code == 200:
                 modules = response.json()
                 table = Table(title="Modules")
@@ -60,11 +115,16 @@ def list_modules():
         console.print(f"[red]Could not connect to API at {API_URL}[/red]")
 
 @app.command()
-def create_event(user_id: int, module_id: int, payload: str):
+def create_event(module_id: int, payload: str):
     """
     Create a new event.
     payload: JSON string of the event data.
     """
+    token = _get_token()
+    if not token:
+        console.print("[red]Not logged in. Please run 'login' first.[/red]")
+        raise typer.Exit(code=1)
+
     try:
         payload_dict = json.loads(payload)
     except json.JSONDecodeError:
@@ -72,12 +132,12 @@ def create_event(user_id: int, module_id: int, payload: str):
         raise typer.Exit(code=1)
 
     with httpx.Client() as client:
+        headers = {"Authorization": f"Bearer {token}"}
         data = {
-            "user_id": user_id,
             "module_id": module_id,
             "payload": payload_dict
         }
-        response = client.post(f"{API_URL}/events", json=data)
+        response = client.post(f"{API_URL}/events", json=data, headers=headers)
         if response.status_code == 201:
             console.print(f"[green]Event created successfully![/green]")
             console.print(response.json())
@@ -90,6 +150,11 @@ def list_events(module_id: Optional[int] = None, user_id: Optional[int] = None):
     """
     List events.
     """
+    token = _get_token()
+    if not token:
+        console.print("[red]Not logged in. Please run 'login' first.[/red]")
+        raise typer.Exit(code=1)
+
     params = {}
     if module_id:
         params["module_id"] = module_id
@@ -98,7 +163,8 @@ def list_events(module_id: Optional[int] = None, user_id: Optional[int] = None):
 
     try:
         with httpx.Client() as client:
-            response = client.get(f"{API_URL}/events", params=params)
+            headers = {"Authorization": f"Bearer {token}"}
+            response = client.get(f"{API_URL}/events", params=params, headers=headers)
             if response.status_code == 200:
                 events = response.json()
                 table = Table(title="Events")

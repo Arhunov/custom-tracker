@@ -9,3 +9,5 @@ httpx
 typer
 jsonschema
 rich
+aiosqlite
+pytest-asyncio

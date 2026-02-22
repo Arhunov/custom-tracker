@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
+from app.models import User
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch
 
@@ -33,16 +34,26 @@ async def session():
         await conn.run_sync(Base.metadata.drop_all)
 
 @pytest.fixture(scope="function")
-async def client(session):
+async def test_user(session):
+    user = User(username="testuser", api_key="test-api-key")
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+@pytest.fixture(scope="function")
+async def client(session, test_user):
     def get_session_override():
         return session
 
     app.dependency_overrides[get_db] = get_session_override
 
+    headers = {"X-API-Key": test_user.api_key}
+
     # Patch the engine in app.main to point to test_engine
     # This ensures lifespan uses the test engine to create tables
     with patch("app.main.engine", test_engine):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as c:
             yield c
 
     app.dependency_overrides.clear()

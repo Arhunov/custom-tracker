@@ -14,7 +14,6 @@ class Module(ModuleBase):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 class EventBase(BaseModel):
-    user_id: int
     module_id: int
     payload: Dict[str, Any]
 
@@ -23,5 +22,6 @@ class EventCreate(EventBase):
 
 class Event(EventBase):
     id: int
+    user_id: int
     timestamp: datetime
     model_config = ConfigDict(from_attributes=True)

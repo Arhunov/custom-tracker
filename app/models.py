@@ -1,4 +1,4 @@
-from sqlalchemy import Integer, String, DateTime, ForeignKey, Column
+from sqlalchemy import Integer, String, DateTime, ForeignKey, Column, Boolean
 from sqlalchemy.types import JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -9,6 +9,14 @@ from .database import Base
 
 # Use JSON type that supports JSONB on PostgreSQL and JSON on others (like SQLite for testing)
 JSON_type = JSON().with_variant(JSONB, "postgresql")
+
+class User(Base):
+    __tablename__ = 'users'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String, unique=True, index=True)
+    api_key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 class Module(Base):
     __tablename__ = 'modules'
@@ -22,7 +30,7 @@ class Event(Base):
     __tablename__ = 'events'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     module_id: Mapped[int] = mapped_column(ForeignKey('modules.id'))
     payload: Mapped[Dict[str, Any]] = mapped_column(JSON_type)

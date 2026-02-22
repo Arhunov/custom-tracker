@@ -10,6 +10,13 @@ app = typer.Typer()
 console = Console()
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+API_KEY = os.getenv("CUSTOM_TRACKER_API_KEY")
+
+@app.callback()
+def main(api_key: Optional[str] = typer.Option(None, envvar="CUSTOM_TRACKER_API_KEY", help="API Key for authentication")):
+    global API_KEY
+    if api_key:
+        API_KEY = api_key
 
 @app.command()
 def create_module(name: str, schema: str):
@@ -23,7 +30,8 @@ def create_module(name: str, schema: str):
         console.print("[red]Invalid JSON string for schema[/red]")
         raise typer.Exit(code=1)
 
-    with httpx.Client() as client:
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+    with httpx.Client(headers=headers) as client:
         # Note: In Pydantic model it's aliased as 'schema', so we send 'schema' key
         response = client.post(f"{API_URL}/modules", json={"name": name, "schema": schema_dict})
         if response.status_code == 201:
@@ -39,7 +47,8 @@ def list_modules():
     List all registered modules.
     """
     try:
-        with httpx.Client() as client:
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
+        with httpx.Client(headers=headers) as client:
             response = client.get(f"{API_URL}/modules")
             if response.status_code == 200:
                 modules = response.json()
@@ -60,7 +69,7 @@ def list_modules():
         console.print(f"[red]Could not connect to API at {API_URL}[/red]")
 
 @app.command()
-def create_event(user_id: int, module_id: int, payload: str):
+def create_event(module_id: int, payload: str):
     """
     Create a new event.
     payload: JSON string of the event data.
@@ -71,9 +80,9 @@ def create_event(user_id: int, module_id: int, payload: str):
         console.print("[red]Invalid JSON string for payload[/red]")
         raise typer.Exit(code=1)
 
-    with httpx.Client() as client:
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+    with httpx.Client(headers=headers) as client:
         data = {
-            "user_id": user_id,
             "module_id": module_id,
             "payload": payload_dict
         }
@@ -97,7 +106,8 @@ def list_events(module_id: Optional[int] = None, user_id: Optional[int] = None):
         params["user_id"] = user_id
 
     try:
-        with httpx.Client() as client:
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
+        with httpx.Client(headers=headers) as client:
             response = client.get(f"{API_URL}/events", params=params)
             if response.status_code == 200:
                 events = response.json()

@@ -20,24 +20,63 @@ def main(api_key: Optional[str] = typer.Option(None, envvar="CUSTOM_TRACKER_API_
         API_KEY = api_key
 
 @app.command()
-def create_module(name: str, schema: str):
+def create_module(
+    name: Optional[str] = typer.Argument(None, help="Module name"),
+    schema: Optional[str] = typer.Argument(None, help="JSON string of the schema"),
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="Path to JSON file containing module definition (name and schema) or just schema")
+):
     """
     Register a new module.
-    schema: JSON string of the schema.
     """
-    try:
-        schema_dict = json.loads(schema)
-    except json.JSONDecodeError:
-        console.print("[red]Invalid JSON string for schema[/red]")
+    schema_dict = {}
+
+    if file:
+        if not os.path.exists(file):
+            console.print(f"[red]File not found: {file}[/red]")
+            raise typer.Exit(code=1)
+
+        try:
+            with open(file, "r") as f:
+                file_content = json.load(f)
+            if not isinstance(file_content, dict):
+                 console.print(f"[red]Invalid JSON content in file: {file} (must be a dictionary)[/red]")
+                 raise typer.Exit(code=1)
+        except json.JSONDecodeError:
+            console.print(f"[red]Invalid JSON in file: {file}[/red]")
+            raise typer.Exit(code=1)
+
+        # If name is not provided, try to find it in the file
+        if not name:
+            if "name" in file_content and "schema" in file_content:
+                name = file_content["name"]
+                schema_dict = file_content["schema"]
+            else:
+                console.print("[red]Name not provided and not found in file (expected 'name' and 'schema' keys).[/red]")
+                raise typer.Exit(code=1)
+        else:
+            # If name is provided, the file is treated as the schema
+            # Check if file has "schema" key or is the schema itself
+            if "schema" in file_content:
+                 schema_dict = file_content["schema"]
+            else:
+                 schema_dict = file_content
+
+    elif name and schema:
+        try:
+            schema_dict = json.loads(schema)
+        except json.JSONDecodeError:
+            console.print("[red]Invalid JSON string for schema[/red]")
+            raise typer.Exit(code=1)
+    else:
+        console.print("[red]Missing arguments: either provide name and schema, or use --file[/red]")
         raise typer.Exit(code=1)
 
     headers = {"X-API-Key": API_KEY} if API_KEY else {}
     with httpx.Client(headers=headers) as client:
-        # Note: In Pydantic model it's aliased as 'schema', so we send 'schema' key
         response = client.post(f"{API_URL}/modules", json={"name": name, "schema": schema_dict})
         if response.status_code == 201:
             console.print(f"[green]Module '{name}' created successfully![/green]")
-            console.print(response.json())
+            console.print_json(data=response.json())
         else:
             console.print(f"[red]Error creating module: {response.status_code}[/red]")
             console.print(response.text)
@@ -53,15 +92,15 @@ def list_modules():
             response = client.get(f"{API_URL}/modules")
             if response.status_code == 200:
                 modules = response.json()
-                table = Table(title="Modules")
-                table.add_column("ID", justify="right", style="cyan")
+                table = Table(title="Modules", show_lines=True)
+                table.add_column("ID", justify="right", style="cyan", no_wrap=True)
                 table.add_column("Name", style="magenta")
-                table.add_column("Schema", style="green")
+                table.add_column("Schema", style="green", overflow="fold")
 
                 for module in modules:
                     # module["schema"] is used because response model uses populate_by_name=True or similar?
                     # Actually schema uses alias="schema", so output JSON will have "schema".
-                    table.add_row(str(module["id"]), module["name"], json.dumps(module.get("schema", {})))
+                    table.add_row(str(module["id"]), module["name"], json.dumps(module.get("schema", {}), indent=2))
 
                 console.print(table)
             else:
@@ -70,15 +109,43 @@ def list_modules():
         console.print(f"[red]Could not connect to API at {API_URL}[/red]")
 
 @app.command()
-def create_event(module_id: int, payload: str):
+def create_event(
+    module_id: int = typer.Argument(..., help="Module ID"),
+    payload: Optional[str] = typer.Argument(None, help="JSON string of the event data"),
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="Path to JSON file containing payload")
+):
     """
     Create a new event.
-    payload: JSON string of the event data.
     """
-    try:
-        payload_dict = json.loads(payload)
-    except json.JSONDecodeError:
-        console.print("[red]Invalid JSON string for payload[/red]")
+    payload_dict = {}
+
+    if file:
+        if not os.path.exists(file):
+            console.print(f"[red]File not found: {file}[/red]")
+            raise typer.Exit(code=1)
+
+        try:
+            with open(file, "r") as f:
+                payload_dict = json.load(f)
+            if not isinstance(payload_dict, dict):
+                 console.print(f"[red]Invalid JSON content in file: {file} (must be a dictionary)[/red]")
+                 raise typer.Exit(code=1)
+        except json.JSONDecodeError:
+            console.print(f"[red]Invalid JSON in file: {file}[/red]")
+            raise typer.Exit(code=1)
+
+        # If payload argument is also provided, warn or error?
+        # For now, file takes precedence if both are present, or we can error.
+        # But since payload is optional, it might be None.
+
+    elif payload:
+        try:
+            payload_dict = json.loads(payload)
+        except json.JSONDecodeError:
+            console.print("[red]Invalid JSON string for payload[/red]")
+            raise typer.Exit(code=1)
+    else:
+        console.print("[red]Missing arguments: provide payload string or use --file[/red]")
         raise typer.Exit(code=1)
 
     headers = {"X-API-Key": API_KEY} if API_KEY else {}
@@ -90,7 +157,7 @@ def create_event(module_id: int, payload: str):
         response = client.post(f"{API_URL}/events", json=data)
         if response.status_code == 201:
             console.print(f"[green]Event created successfully![/green]")
-            console.print(response.json())
+            console.print_json(data=response.json())
         else:
             console.print(f"[red]Error creating event: {response.status_code}[/red]")
             console.print(response.text)
@@ -112,12 +179,12 @@ def list_events(module_id: Optional[int] = None, user_id: Optional[int] = None):
             response = client.get(f"{API_URL}/events", params=params)
             if response.status_code == 200:
                 events = response.json()
-                table = Table(title="Events")
-                table.add_column("ID", justify="right", style="cyan")
+                table = Table(title="Events", show_lines=True)
+                table.add_column("ID", justify="right", style="cyan", no_wrap=True)
                 table.add_column("User ID", justify="right", style="blue")
                 table.add_column("Module ID", justify="right", style="magenta")
                 table.add_column("Timestamp", style="yellow")
-                table.add_column("Payload", style="green")
+                table.add_column("Payload", style="green", overflow="fold")
 
                 for event in events:
                     table.add_row(
@@ -125,7 +192,7 @@ def list_events(module_id: Optional[int] = None, user_id: Optional[int] = None):
                         str(event["user_id"]),
                         str(event["module_id"]),
                         event["timestamp"],
-                        json.dumps(event["payload"])
+                        json.dumps(event["payload"], indent=2)
                     )
 
                 console.print(table)
@@ -166,7 +233,7 @@ def aggregate(
 
             if response.status_code == 200:
                 results = response.json()
-                table = Table(title="Aggregation Results")
+                table = Table(title="Aggregation Results", show_lines=True)
 
                 # Determine columns dynamically based on first result
                 if results:

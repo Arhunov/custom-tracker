@@ -1,6 +1,7 @@
 import pytest
 from httpx import AsyncClient
 from datetime import datetime, timedelta
+import json
 
 @pytest.mark.anyio
 async def test_aggregate_by_module(client: AsyncClient, test_user):
@@ -95,3 +96,131 @@ async def test_aggregate_by_date(client: AsyncClient, test_user):
     # Check key exists
     assert "date_day" in data[0]["group"]
     assert data[0]["value"] >= 2
+
+@pytest.mark.anyio
+async def test_correlation_perfect_positive(client: AsyncClient, test_user):
+    # Setup
+    schema = {"type": "object"}
+    mod1 = await client.post("/modules", json={"name": "c1", "schema": schema})
+    mod2 = await client.post("/modules", json={"name": "c2", "schema": schema})
+    id1 = mod1.json()["id"]
+    id2 = mod2.json()["id"]
+
+    # Create correlated data over 5 days
+    # Perfect positive correlation (y = 2x) -> r = 1.0
+
+    base_time = datetime(2023, 1, 1, 12, 0, 0)
+    events = []
+    for i in range(1, 6):
+        ts = (base_time + timedelta(days=i)).isoformat()
+        events.append({"module_id": id1, "payload": {"val": i}, "timestamp": ts, "user_id": test_user.id})
+        events.append({"module_id": id2, "payload": {"val": i * 2}, "timestamp": ts, "user_id": test_user.id})
+
+    files = {"file": ("data.json", json.dumps(events), "application/json")}
+    resp = await client.post("/data/import", files=files)
+    assert resp.status_code == 200
+
+    # Calculate correlation
+    resp = await client.post("/analytics/correlation", json={
+        "module_1_id": id1,
+        "target_1_key": "val",
+        "module_2_id": id2,
+        "target_2_key": "val",
+        "group_by": "day",
+        "operation": "avg"
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["data_points"] == 5
+    assert abs(data["correlation_coefficient"] - 1.0) < 0.001
+
+@pytest.mark.anyio
+async def test_correlation_perfect_negative(client: AsyncClient, test_user):
+    schema = {"type": "object"}
+    mod1 = await client.post("/modules", json={"name": "cn1", "schema": schema})
+    mod2 = await client.post("/modules", json={"name": "cn2", "schema": schema})
+    id1 = mod1.json()["id"]
+    id2 = mod2.json()["id"]
+
+    # y = -x
+    base_time = datetime(2023, 2, 1, 12, 0, 0)
+    events = []
+    for i in range(1, 6):
+        ts = (base_time + timedelta(days=i)).isoformat()
+        events.append({"module_id": id1, "payload": {"val": i}, "timestamp": ts, "user_id": test_user.id})
+        events.append({"module_id": id2, "payload": {"val": -i}, "timestamp": ts, "user_id": test_user.id})
+
+    files = {"file": ("data.json", json.dumps(events), "application/json")}
+    await client.post("/data/import", files=files)
+
+    resp = await client.post("/analytics/correlation", json={
+        "module_1_id": id1,
+        "target_1_key": "val",
+        "module_2_id": id2,
+        "target_2_key": "val"
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["data_points"] == 5
+    assert abs(data["correlation_coefficient"] - (-1.0)) < 0.001
+
+@pytest.mark.anyio
+async def test_correlation_insufficient_data(client: AsyncClient, test_user):
+    schema = {"type": "object"}
+    mod1 = await client.post("/modules", json={"name": "ci1", "schema": schema})
+    mod2 = await client.post("/modules", json={"name": "ci2", "schema": schema})
+    id1 = mod1.json()["id"]
+    id2 = mod2.json()["id"]
+
+    # Only 1 point overlap
+    base_time = datetime(2023, 3, 1, 12, 0, 0)
+    events = [
+        {"module_id": id1, "payload": {"val": 1}, "timestamp": base_time.isoformat(), "user_id": test_user.id},
+        {"module_id": id2, "payload": {"val": 2}, "timestamp": base_time.isoformat(), "user_id": test_user.id}
+    ]
+
+    files = {"file": ("data.json", json.dumps(events), "application/json")}
+    await client.post("/data/import", files=files)
+
+    resp = await client.post("/analytics/correlation", json={
+        "module_1_id": id1,
+        "target_1_key": "val",
+        "module_2_id": id2,
+        "target_2_key": "val"
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["data_points"] == 1
+    assert data["correlation_coefficient"] is None
+
+@pytest.mark.anyio
+async def test_correlation_no_overlap(client: AsyncClient, test_user):
+    schema = {"type": "object"}
+    mod1 = await client.post("/modules", json={"name": "no1", "schema": schema})
+    mod2 = await client.post("/modules", json={"name": "no2", "schema": schema})
+    id1 = mod1.json()["id"]
+    id2 = mod2.json()["id"]
+
+    # Different days
+    events = [
+        {"module_id": id1, "payload": {"val": 1}, "timestamp": "2023-04-01T12:00:00", "user_id": test_user.id},
+        {"module_id": id2, "payload": {"val": 2}, "timestamp": "2023-04-02T12:00:00", "user_id": test_user.id}
+    ]
+
+    files = {"file": ("data.json", json.dumps(events), "application/json")}
+    await client.post("/data/import", files=files)
+
+    resp = await client.post("/analytics/correlation", json={
+        "module_1_id": id1,
+        "target_1_key": "val",
+        "module_2_id": id2,
+        "target_2_key": "val"
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["data_points"] == 0
+    assert data["correlation_coefficient"] is None

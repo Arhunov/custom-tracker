@@ -295,6 +295,102 @@ async def list_events(
 
 # Analytics API
 
+async def get_time_series_data(
+    db: AsyncSession,
+    module_id: int,
+    target_key: str,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    group_by: schemas.GroupBy,
+    operation: schemas.AggregationType
+) -> Dict[str, float]:
+    select_clauses = []
+    group_by_clauses = []
+
+    # Detect dialect for date truncation and JSON extraction compatibility (SQLite vs Postgres)
+    # Default to postgresql logic unless we detect sqlite
+    dialect_name = "postgresql"
+    if db.bind and hasattr(db.bind, "dialect"):
+         dialect_name = db.bind.dialect.name
+    # Handle the case where bind might be an engine or connection wrapper
+    # In tests with aiosqlite, dialect is sqlite
+
+    # 1. Group By Logic (Time only)
+    col = None
+    if dialect_name == "postgresql":
+        trunc_unit = group_by.value
+        col = func.date_trunc(trunc_unit, models.Event.timestamp).label(f"date_{trunc_unit}")
+    else:
+        # SQLite fallback
+        if group_by == schemas.GroupBy.DAY:
+            fmt = "%Y-%m-%d"
+        elif group_by == schemas.GroupBy.MONTH:
+            fmt = "%Y-%m"
+        elif group_by == schemas.GroupBy.WEEK:
+            fmt = "%Y-%W"
+        else:
+            fmt = "%Y-%m-%d"
+
+        col = func.strftime(fmt, models.Event.timestamp).label(f"date_{group_by.value}")
+
+    select_clauses.append(col)
+    group_by_clauses.append(col)
+
+    # 2. Aggregation Logic
+    field_expr = None
+    if dialect_name == "postgresql":
+            # Postgres: payload ->> key, cast to Numeric
+            field_expr = cast(models.Event.payload[target_key].astext, Numeric)
+    else:
+            # SQLite: json_extract
+            field_expr = func.json_extract(models.Event.payload, f"$.{target_key}")
+
+    agg_func = None
+    if operation == schemas.AggregationType.SUM:
+        agg_func = func.sum(field_expr)
+    elif operation == schemas.AggregationType.AVG:
+        agg_func = func.avg(field_expr)
+    elif operation == schemas.AggregationType.MIN:
+        agg_func = func.min(field_expr)
+    elif operation == schemas.AggregationType.MAX:
+        agg_func = func.max(field_expr)
+    else:
+        agg_func = func.count(models.Event.id) # Fallback
+
+    select_clauses.append(agg_func.label("value"))
+
+    stmt = select(*select_clauses)
+    stmt = stmt.where(models.Event.module_id == module_id)
+
+    if start_date:
+        stmt = stmt.where(models.Event.timestamp >= start_date)
+    if end_date:
+        stmt = stmt.where(models.Event.timestamp <= end_date)
+
+    stmt = stmt.group_by(*group_by_clauses)
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    # Convert to dictionary {date_str: value}
+    data = {}
+    for row in rows:
+        # The first column is the date string/object (depends on dialect/driver)
+        # The second column is the value
+
+        date_val = row[0]
+        val = row[1]
+
+        key = None
+        if hasattr(date_val, "isoformat"):
+            key = date_val.isoformat()
+        else:
+            key = str(date_val)
+
+        data[key] = float(val) if val is not None else 0.0
+
+    return data
+
 @app.post("/analytics/aggregate", response_model=List[schemas.AggregationResult])
 async def aggregate_events(
     request: schemas.AggregationRequest,
@@ -410,6 +506,65 @@ async def aggregate_events(
         ))
 
     return output
+
+@app.post("/analytics/correlation", response_model=schemas.CorrelationResult)
+async def calculate_correlation(
+    request: schemas.CorrelationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Fetch data for module 1
+    data1 = await get_time_series_data(
+        db,
+        request.module_1_id,
+        request.target_1_key,
+        request.start_date,
+        request.end_date,
+        request.group_by,
+        request.operation
+    )
+
+    # Fetch data for module 2
+    data2 = await get_time_series_data(
+        db,
+        request.module_2_id,
+        request.target_2_key,
+        request.start_date,
+        request.end_date,
+        request.group_by,
+        request.operation
+    )
+
+    # Align data
+    common_keys = set(data1.keys()) & set(data2.keys())
+
+    if len(common_keys) < 2:
+        return schemas.CorrelationResult(correlation_coefficient=None, data_points=len(common_keys))
+
+    x = []
+    y = []
+    for key in common_keys:
+        x.append(data1[key])
+        y.append(data2[key])
+
+    # Calculate Pearson Correlation
+    n = len(x)
+    sum_x = sum(x)
+    sum_y = sum(y)
+    sum_x_sq = sum(val**2 for val in x)
+    sum_y_sq = sum(val**2 for val in y)
+    sum_xy = sum(x[i] * y[i] for i in range(n))
+
+    numerator = (n * sum_xy) - (sum_x * sum_y)
+    denominator_sq = ((n * sum_x_sq) - (sum_x**2)) * ((n * sum_y_sq) - (sum_y**2))
+
+    if denominator_sq <= 0:
+        return schemas.CorrelationResult(correlation_coefficient=None, data_points=n)
+
+    denominator = denominator_sq ** 0.5
+    correlation = numerator / denominator
+
+    return schemas.CorrelationResult(correlation_coefficient=correlation, data_points=n)
 
 
 # Data Export API

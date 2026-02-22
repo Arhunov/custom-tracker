@@ -3,6 +3,7 @@ from fastapi.security import APIKeyHeader
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, func, cast, Numeric, or_
+from sqlalchemy.orm import selectinload
 from .database import get_db, engine, Base
 from contextlib import asynccontextmanager
 from . import models, schemas
@@ -576,3 +577,47 @@ async def import_data(
         "failure_count": failure_count,
         "errors": errors[:10] # Limit error details
     }
+
+# LLM Context API
+
+@app.get("/llm/context", response_model=Dict[str, str])
+async def get_llm_context(
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    module_id: int | None = None,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    stmt = select(models.Event).options(selectinload(models.Event.module))
+    stmt = stmt.where(models.Event.user_id == current_user.id)
+
+    if module_id:
+        stmt = stmt.where(models.Event.module_id == module_id)
+    if start_date:
+        stmt = stmt.where(models.Event.timestamp >= start_date)
+    if end_date:
+        stmt = stmt.where(models.Event.timestamp <= end_date)
+
+    stmt = stmt.order_by(models.Event.timestamp.desc(), models.Event.id.desc()).limit(limit)
+
+    result = await db.execute(stmt)
+    events = result.scalars().all()
+
+    formatted_lines = []
+    for event in events:
+        module_name = event.module.name if event.module else "Unknown"
+        timestamp_str = event.timestamp.isoformat()
+
+        payload_items = []
+        if isinstance(event.payload, dict):
+            for k, v in event.payload.items():
+                payload_items.append(f"{k}={v}")
+        else:
+            payload_items.append(str(event.payload))
+
+        payload_str = ", ".join(payload_items)
+
+        formatted_lines.append(f"[{timestamp_str}] {module_name}: {payload_str}")
+
+    return {"context": "\n".join(formatted_lines)}

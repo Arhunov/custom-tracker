@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Security
+from fastapi import FastAPI, Depends, HTTPException, status, Security, UploadFile, File
 from fastapi.security import APIKeyHeader
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, func, cast, Numeric
 from .database import get_db, engine, Base
@@ -11,6 +12,9 @@ from sqlalchemy import func
 import jsonschema
 import os
 import secrets
+import csv
+import io
+import json
 
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
@@ -305,3 +309,170 @@ async def aggregate_events(
         ))
 
     return output
+
+
+# Data Export API
+
+@app.get("/data/export")
+async def export_data(
+    format: str = "json",
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    module_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if format not in ["json", "csv"]:
+        raise HTTPException(status_code=400, detail="Invalid format. Supported formats: json, csv")
+
+    stmt = select(models.Event)
+    if module_id:
+        stmt = stmt.where(models.Event.module_id == module_id)
+    if start_date:
+        stmt = stmt.where(models.Event.timestamp >= start_date)
+    if end_date:
+        stmt = stmt.where(models.Event.timestamp <= end_date)
+
+    # Ensure consistent ordering
+    stmt = stmt.order_by(models.Event.timestamp.desc())
+
+    result = await db.execute(stmt)
+    events = result.scalars().all()
+
+    if format == "json":
+        data = [schemas.Event.model_validate(event).model_dump(mode='json') for event in events]
+
+        # Use a generator to stream JSON response
+        def iter_json():
+            yield json.dumps(data)
+
+        return StreamingResponse(iter_json(), media_type="application/json", headers={"Content-Disposition": "attachment; filename=export.json"})
+
+    elif format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Define headers
+        headers = ["id", "user_id", "module_id", "timestamp", "payload"]
+        writer.writerow(headers)
+
+        # Write data to StringIO buffer
+        for event in events:
+            writer.writerow([
+                event.id,
+                event.user_id,
+                event.module_id,
+                event.timestamp.isoformat(),
+                json.dumps(event.payload)
+            ])
+
+        output.seek(0)
+        return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=export.csv"})
+
+
+# Data Import API
+
+@app.post("/data/import")
+async def import_data(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Determine format
+    filename = file.filename.lower()
+    if filename.endswith(".json"):
+        format = "json"
+    elif filename.endswith(".csv"):
+        format = "csv"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file format. Use .json or .csv")
+
+    content = await file.read()
+
+    events_to_create = []
+
+    if format == "json":
+        try:
+            data = json.loads(content.decode("utf-8"))
+            if not isinstance(data, list):
+                raise ValueError("JSON content must be a list of events")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON file")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        for item in data:
+            events_to_create.append(item)
+
+    elif format == "csv":
+        try:
+            decoded_content = content.decode("utf-8")
+            reader = csv.DictReader(io.StringIO(decoded_content))
+            for row in reader:
+                # payload is stored as JSON string in CSV
+                if "payload" in row:
+                    try:
+                        row["payload"] = json.loads(row["payload"])
+                    except json.JSONDecodeError:
+                         raise HTTPException(status_code=400, detail="Invalid JSON in CSV payload column")
+
+                events_to_create.append(row)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error parsing CSV: {str(e)}")
+
+    success_count = 0
+    failure_count = 0
+    errors = []
+
+    # Get all modules to validate schemas
+    stmt = select(models.Module)
+    result = await db.execute(stmt)
+    modules = {m.id: m for m in result.scalars().all()}
+
+    for i, event_data in enumerate(events_to_create):
+        try:
+            module_id = int(event_data.get("module_id"))
+            if module_id not in modules:
+                raise ValueError(f"Module ID {module_id} not found")
+
+            module = modules[module_id]
+            payload = event_data.get("payload", {})
+
+            # Validate schema
+            jsonschema.validate(instance=payload, schema=module.module_schema)
+
+            timestamp = event_data.get("timestamp")
+            if timestamp:
+                 # Ensure timestamp is parsed correctly if it's a string
+                 if isinstance(timestamp, str):
+                     timestamp = datetime.fromisoformat(timestamp)
+            else:
+                timestamp = datetime.utcnow()
+
+            user_id = event_data.get("user_id")
+            if not user_id:
+                user_id = current_user.id
+            else:
+                user_id = int(user_id)
+
+            new_event = models.Event(
+                user_id=user_id,
+                module_id=module_id,
+                timestamp=timestamp,
+                payload=payload
+            )
+            db.add(new_event)
+            success_count += 1
+
+        except Exception as e:
+            failure_count += 1
+            errors.append(f"Row {i}: {str(e)}")
+
+    await db.commit()
+
+    return {
+        "status": "completed",
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "errors": errors[:10] # Limit error details
+    }

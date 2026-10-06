@@ -120,3 +120,8 @@ details summary { cursor: pointer; }
 .qrow { background: var(--surface); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow); }
 .qrow .ok { color: var(--ok); font-weight: 600; }
 .rule.static { background: var(--surface2); color: var(--muted); }
+.hint-row { display: flex; gap: 8px; margin: 6px 0; }
+.hint-ic { flex: none; }
+.more { margin-top: 8px; color: var(--muted); font-size: 15px; }
+.more summary { font-size: 14px; }
+.more div { margin-top: 6px; color: var(--text); }

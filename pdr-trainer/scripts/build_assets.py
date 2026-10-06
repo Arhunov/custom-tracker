@@ -25,7 +25,8 @@ def main(dest):
         e = exp.get(q["id"], {})
         item = {"id": q["id"], "s": q["section"], "c": q["categories"], "t": q["text"], "a": q["answers"],
                 "k": q["correct"], "img": q["image"], "fx": q["fixed_order"],
-                "e": e.get("e"), "r": e.get("r") or [], "tip": e.get("tip") or None, "flag": e.get("flag")}
+                "e": e.get("e"), "r": e.get("r") or [], "flag": e.get("flag"),
+                "ru": e.get("rule"), "w": e.get("why"), "tm": e.get("terms") or []}
         questions.append({k: v for k, v in item.items() if v is not None and v is not False and v != []})
     payload = {"source": src["source"], "scraped": src["scraped"], "sections": src["sections"], "questions": questions}
     (dest / "data/questions.js").write_text(

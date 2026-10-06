@@ -296,9 +296,15 @@
     const rules = (q.r || []).map((r) => (/КУпАП|Кодекс|Закон/i.test(r)
       ? `<span class="rule static">${esc(r)}</span>`
       : `<button class="rule" data-act="rule" data-ref="${esc(r)}" data-q="${esc(q.id)}">${esc(r)}</button>`)).join('');
-    return `<div class="card explain">${verdict}
-      ${q.e ? `<div>${esc(q.e)}</div>` : '<div class="muted">Пояснення ще немає.</div>'}
-      ${q.tip ? `<div class="tip">💡 ${esc(q.tip)}</div>` : ''}
+    const terms = (q.tm || []).map((t) => `<div class="hint-row"><span class="hint-ic">📖</span><div><b>${esc(t.t)}</b> — ${esc(t.d)}</div></div>`).join('');
+    const short = q.ru
+      ? `<div class="hint-row"><span class="hint-ic">📘</span><div>${esc(q.ru)}</div></div>
+         ${q.w ? `<div class="hint-row"><span class="hint-ic">🤔</span><div>${esc(q.w)}</div></div>` : ''}${terms}`
+      : '';
+    const long = q.e
+      ? (short ? `<details class="more"><summary>Детальніше</summary><div>${esc(q.e)}</div></details>` : `<div>${esc(q.e)}</div>`)
+      : '';
+    return `<div class="card explain">${verdict}${short}${long}
       ${rules ? `<div class="rules">${rules}</div>` : ''}
       ${q.flag ? `<div class="flag">⚠️ ${esc(q.flag)}</div>` : ''}
     </div>`;

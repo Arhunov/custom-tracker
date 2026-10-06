@@ -240,6 +240,17 @@
     sec = RULE_SEC.get(top);
     if (!sec) return null;
     lines = sec.text.split('\n');
+    const parts = num.split('.');
+    if ((top === '33' || top === '34') && parts.length === 2) {
+      // "п. 33.1" = a group of signs / markings, e.g. "1. Попереджувальні знаки"
+      const gi = lines.findIndex((l) => l.startsWith(parts[1] + '. '));
+      if (gi >= 0) {
+        let ge = gi + 1;
+        while (ge < lines.length && !/^\d+\. /.test(lines[ge])) ge++;
+        const body = lines.slice(gi, ge).join('\n');
+        return { sec, text: body.length > 1500 ? body.slice(0, 1500) + '…' : body, num, title: 'Розділ ' + num };
+      }
+    }
     const re = new RegExp('^' + num.replace(/\./g, '\\.') + '\\.?\\s');
     start = lines.findIndex((l) => re.test(l));
     if (start < 0) return { sec, text: null, num };

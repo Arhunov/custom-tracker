@@ -21,7 +21,8 @@
 
 ```
 scripts/scrape.py              # збирає питання B/C і картинки (pdrtest.com, дзеркало офіційної бази ГСЦ МВС)
-scripts/merge_explanations.py  # зливає пакети пояснень у data/explanations.json з перевіркою
+scripts/merge_explanations.py  # зливає пакети пояснень у data/explanations.json з перевіркою (одноразово)
+scripts/apply_fixes.py         # накладає виправлення після перевірки; data/explanations.json — джерело правди
 scripts/build_assets.py        # складає web/ + data/ в android/app/src/main/assets/www
 data/questions.json            # питання, правильні відповіді, розділи
 data/explanations.json         # пояснення, підказки, посилання на ПДР

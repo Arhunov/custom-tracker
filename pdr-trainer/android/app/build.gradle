@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'ua.pdrtrainer'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'ua.pdrtrainer'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        release {
+            // Personal sideloaded app: the key is kept in the repo so every rebuild can be
+            // installed over the previous one without losing study progress.
+            storeFile file('../keystore/release.jks')
+            storePassword 'pdrtrainer'
+            keyAlias 'pdrtrainer'
+            keyPassword 'pdrtrainer'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    androidResources {
+        // images are already compressed webp
+        noCompress 'webp'
+    }
+}

@@ -411,12 +411,32 @@
   function examScreen({ state: st }) {
     if (st.finished) return examResult(st);
     const q = BY_ID.get(st.ids[st.cur]);
-    const dots = st.ids.map((id, i) => `<button class="dot ${st.answers[i] != null ? 'done' : ''} ${i === st.cur ? 'cur' : ''}" data-act="exam-go" data-i="${i}">${i + 1}</button>`).join('');
+    const dots = st.ids.map((id, i) => {
+      const a = st.answers[i];
+      const cls = a == null ? '' : a === BY_ID.get(id).k ? 'okd' : 'badd';
+      return `<button class="dot ${cls} ${i === st.cur ? 'cur' : ''}" data-act="exam-go" data-i="${i}">${i + 1}</button>`;
+    }).join('');
+    const chosen = st.answers[st.cur];
+    const answered = chosen != null;
+    let feedback = '';
+    let bar = '<button class="btn" data-act="exam-skip">Пропустити</button><button class="btn primary" data-act="exam-finish">Завершити</button>';
+    if (answered) {
+      // like the official exam: show right away whether the answer was correct
+      const right = chosen === q.k;
+      const errors = examErrors(st);
+      feedback = `<div class="card explain"><div class="verdict ${right ? 'ok' : 'bad'}">${right ? '✓ Правильно' : '✗ Неправильно — правильна відповідь ' + (st.orders[st.cur].indexOf(q.k) + 1)}</div>
+        <div class="muted small">Помилок: ${errors} (можна ${EXAM_MAX_ERRORS})${errors > EXAM_MAX_ERRORS ? ' — іспит уже не складено' : ''}</div>
+        ${q.e ? `<details style="margin-top:8px"><summary class="small">Пояснення</summary>${explainHTML(q, st.orders[st.cur], null)}</details>` : ''}</div>`;
+      const last = nextUnanswered(st, st.cur) < 0;
+      bar = last
+        ? '<button class="btn primary" data-act="exam-finish">Результат</button>'
+        : '<button class="btn" data-act="exam-finish">Завершити</button><button class="btn primary" data-act="exam-next">Далі</button>';
+    }
     return topbar('Іспит', { right: '<span class="timer" id="timer"></span>' }) +
       `<div class="dots">${dots}</div>` +
       `<div class="q-meta"><span>Питання ${st.cur + 1} з ${EXAM_SIZE}</span><span>№ ${esc(q.id)}</span></div>` +
-      questionHTML(q, st.orders[st.cur], st.answers[st.cur], false) +
-      `<div class="bottombar"><div class="inner"><button class="btn" data-act="exam-skip">Пропустити</button><button class="btn primary" data-act="exam-finish">Завершити</button></div></div>`;
+      questionHTML(q, st.orders[st.cur], chosen, answered, { hideExplain: true }) + feedback +
+      `<div class="bottombar"><div class="inner">${bar}</div></div>`;
   }
   function startExamTimer(st) {
     if (st.finished) return;
@@ -430,7 +450,13 @@
     timerHandle = setInterval(tick, 500);
   }
   function examAnswer(st, i) {
+    if (st.answers[st.cur] != null) return; // answers are final, as in the official exam
     st.answers[st.cur] = i;
+    render();
+    const fb = document.querySelector('.explain');
+    if (fb) fb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  function examNext(st) {
     const nextIdx = nextUnanswered(st, st.cur);
     if (nextIdx < 0) { finishExam(st); return; }
     st.cur = nextIdx;
@@ -678,8 +704,9 @@
 
   // ---------- actions ----------
   function studyQueue(list, maxNew) {
-    const due = dueCards(list).map((q) => q.id);
-    const fresh = newCards(list).slice(0, maxNew).map((q) => q.id);
+    // mix topics: random order for both reviews and new cards
+    const due = shuffled(dueCards(list).map((q) => q.id));
+    const fresh = shuffled(newCards(list).map((q) => q.id)).slice(0, maxNew);
     return interleave(due, fresh);
   }
   const ACTIONS = {
@@ -723,6 +750,7 @@
     next() { studyNext(view.params.s); },
     exam() { startExam(); },
     'exam-go'(el) { view.params.state.cur = +el.dataset.i; render(); },
+    'exam-next'() { examNext(view.params.state); },
     'exam-skip'() {
       const st = view.params.state;
       const n = nextUnanswered(st, st.cur);

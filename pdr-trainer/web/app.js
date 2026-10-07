@@ -33,7 +33,7 @@
     },
   };
 
-  const DEFAULT_SETTINGS = { cats: ['B', 'C'], newPerDay: 30, retention: 0.95, shuffle: true, examDate: '', theme: 'auto' };
+  const DEFAULT_SETTINGS = { cats: ['B', 'C'], newPerDay: 30, session: 20, retention: 0.95, shuffle: true, examDate: '', theme: 'auto' };
   let settings = Object.assign({}, DEFAULT_SETTINGS, store.get('settings', {}));
   let cards = store.get('cards', {});   // id -> FSRS state
   let log = store.get('log', {});       // day -> {n, ok, nw}
@@ -104,10 +104,17 @@
     if (!log[t]) log[t] = { n: 0, ok: 0, nw: 0 };
     return log[t];
   }
+  // Review order: exam mistakes first, then questions you have got wrong before
+  // (the longest unseen first), then everything else from the weakest memory up.
+  const reviewTier = (c) => (c.xm ? 0 : c.lapses > 0 ? 1 : 2);
   function dueCards(list) {
     const t = today();
-    return list.filter((q) => cards[q.id] && cards[q.id].due <= t)
-      .sort((a, b) => recall(a.id) - recall(b.id));
+    return shuffled(list.filter((q) => cards[q.id] && cards[q.id].due <= t)).sort((a, b) => {
+      const ca = cards[a.id], cb = cards[b.id];
+      const ta = reviewTier(ca), tb = reviewTier(cb);
+      if (ta !== tb) return ta - tb;
+      return ta < 2 ? ca.last - cb.last : recall(a.id) - recall(b.id);
+    });
   }
   function newCards(list) {
     return list.filter((q) => !cards[q.id]);
@@ -131,14 +138,14 @@
     }
     return out;
   }
-  function grade(id, g) {
+  function grade(id, g, fromExam) {
     const t = today();
     const wasNew = !cards[id];
     cards[id] = FSRS.review(cards[id], g, t, { retention: settings.retention, fuzz: Math.random() });
     const l = todayLog();
     l.n++;
     if (g > 1) l.ok++;
-    if (wasNew) l.nw++;
+    if (wasNew && !fromExam) l.nw++;
     saveCards();
     saveLog();
   }
@@ -332,6 +339,11 @@
   }
 
   // ---------- study session ----------
+  function replaceSession(kind, ids, title) {
+    // "continue" from a finished session replaces it instead of stacking screens
+    if (view && view.name === 'study' && !view.params.s.cur) view = stack.pop() || null;
+    startSession(kind, ids, title);
+  }
   function startSession(kind, ids, title) {
     if (!ids.length) { toast('Немає питань для цього режиму'); return; }
     const s = { kind, title, queue: ids.slice(), pos: 0, done: new Set(), relearn: new Set(), answered: 0, correct: 0, cur: null };
@@ -351,9 +363,19 @@
   function studyScreen({ s }) {
     if (!s.cur) {
       const acc = s.answered ? Math.round(100 * s.correct / s.answered) : 0;
+      let more = '';
+      if (s.kind === 'review') {
+        const left = dueCards(pool()).length;
+        if (left) more = `<button class="btn primary" data-act="review">Ще повторення<span class="sub">на черзі ${left}</span></button>`;
+      } else if (s.kind === 'learn') {
+        const left = newLeftToday();
+        more = left
+          ? `<button class="btn primary" data-act="learn">Ще нові<span class="sub">на сьогодні лишилось ${left}</span></button>`
+          : `<button class="btn" data-act="learn-extra">Ліміт нових виконано<span class="sub">взяти ще ${settings.session}</span></button>`;
+      }
       return topbar(s.title) + `<div class="card hero"><div class="big">🎉</div><h2>Сесію завершено</h2>
         <p class="muted">Відповідей: ${s.answered} · правильно з першої спроби: ${acc}%</p></div>
-        <button class="btn primary" data-act="home">На головну</button>`;
+        <div class="list">${more}<button class="btn" data-act="home">На головну</button></div>`;
     }
     const q = BY_ID.get(s.cur.id);
     const left = s.queue.length - s.pos;
@@ -494,9 +516,14 @@
     // feed results into the scheduler: errors are lapses, correct answers count only for cards already being learned
     st.ids.forEach((id, i) => {
       const a = st.answers[i];
-      if (a != null && a !== BY_ID.get(id).k) grade(id, 1);
-      else if (a === BY_ID.get(id).k && cards[id]) grade(id, 3);
+      if (a != null && a !== BY_ID.get(id).k) {
+        grade(id, 1, true);
+        // exam mistakes go to the top of today's reviews
+        cards[id].xm = 1;
+        cards[id].due = today();
+      } else if (a === BY_ID.get(id).k && cards[id]) grade(id, 3, true);
     });
+    saveCards();
     const hist = store.get('exams', []);
     hist.push({ day: today(), errors: examErrors(st) + st.answers.filter((a) => a == null).length, took: st.took });
     store.set('exams', hist.slice(-100));
@@ -551,9 +578,15 @@
       }
       const cats = [['B', 'B · легковий'], ['C', 'C · вантажний']].map(([c, l]) =>
         `<button class="chip ${settings.cats.includes(c) ? 'on' : ''}" data-act="cat" data-c="${c}">${l}</button>`).join('');
-      const studyBtn = due + fresh > 0
-        ? `<button class="btn primary" data-act="study">Вчити<span class="sub">${due} на повторення · ${fresh} нових</span></button>`
-        : `<button class="btn" data-act="study-more">На сьогодні все ✓<span class="sub">Взяти ще 10 нових</span></button>`;
+      const dueList = dueCards(p);
+      const misses = dueList.filter((q) => reviewTier(cards[q.id]) < 2).length;
+      const reviewBtn = due
+        ? `<button class="btn primary" data-act="review">🔁 Повторити<span class="sub">${due} на черзі${misses ? ` · ${misses} з помилками` : ''}</span></button>`
+        : '<button class="btn" disabled>🔁 Повторити<span class="sub">на сьогодні все ✓</span></button>';
+      const learnBtn = fresh
+        ? `<button class="btn ${due ? '' : 'primary'}" data-act="learn">➕ Вчити нове<span class="sub">${fresh} на сьогодні</span></button>`
+        : `<button class="btn" data-act="learn-extra">➕ Вчити нове<span class="sub">ліміт виконано · ще ${settings.session}</span></button>`;
+      const studyBtn = `<div class="row">${reviewBtn}${learnBtn}</div>`;
       return `<div class="topbar"><h1>ПДР Тренер</h1><button class="iconbtn" data-act="go" data-to="settings" aria-label="Налаштування">⚙</button></div>
         <div class="chips" style="margin-bottom:12px">${cats}</div>
         <div class="card hero">
@@ -692,6 +725,7 @@
         <div class="field"><label>Категорії</label><div class="chips">${[['B', 'B · легковий'], ['C', 'C · вантажний']].map(([c, l]) => `<button class="chip ${settings.cats.includes(c) ? 'on' : ''}" data-act="cat" data-c="${c}">${l}</button>`).join('')}</div></div>
         <div class="field"><label for="s-new">Нових питань на день</label><select id="s-new" data-set="newPerDay">${opt([10, 20, 30, 40, 50, 70, 100, 150], settings.newPerDay, (v) => v)}</select>
           <p class="muted small">Повторення не обмежуються — щодня робіть усі, що на черзі.</p></div>
+        <div class="field"><label for="s-sess">Питань за одну сесію</label><select id="s-sess" data-set="session">${opt([10, 15, 20, 30, 50], settings.session, (v) => v)}</select></div>
         <div class="field"><label for="s-ret">Цільове запам'ятовування</label><select id="s-ret" data-set="retention">${opt([0.9, 0.93, 0.95, 0.97], settings.retention, (v) => Math.round(v * 100) + '%' + (v === 0.95 ? ' (рекомендовано)' : v === 0.97 ? ' (в усмерть, більше повторень)' : ''))}</select>
           <p class="muted small">Питання повертається тоді, коли ймовірність його пригадати падає до цього рівня. Вище — частіші повторення.</p></div>
         <div class="field"><label for="s-exam">Дата іспиту</label><input type="date" id="s-exam" data-set="examDate" value="${esc(settings.examDate)}"></div>
@@ -710,7 +744,8 @@
     help() {
       return topbar('Як вчити') + `<div class="card">
         <p style="margin-top:0"><b>Метод — інтервальне повторення (FSRS).</b> Для кожного питання застосунок оцінює, наскільки міцно ви його пам'ятаєте, і повертає його рівно тоді, коли ви от-от почнете забувати. Що краще знаєте — то рідше бачите.</p>
-        <p><b>Щодня:</b> натисніть «Вчити» і пройдіть усе, що на черзі. 15–30 хвилин на день ефективніше, ніж 3 години раз на тиждень.</p>
+        <p><b>Щодня:</b> спочатку «Повторити» — пройдіть усе, що на черзі; потім «Вчити нове». Сесії короткі (${settings.session} питань, змінюється в налаштуваннях). 15–30 хвилин на день ефективніше, ніж 3 години раз на тиждень.</p>
+        <p><b>Порядок повторень:</b> спершу питання, на які ви помилились на іспиті, далі ті, де вже були помилки (найдавніше бачені першими), потім решта — від найслабшої пам'яті.</p>
         <p><b>Чесно оцінюйте себе.</b> Якщо відповіли правильно, але навмання — тисніть «Вгадав»: питання повернеться завтра. «Легко» — тільки якщо відповідь очевидна миттєво.</p>
         <p><b>Помилки</b> повторюються в тій самій сесії через кілька питань, доки не відповісте правильно, і знову завтра.</p>
         <p><b>Читайте пояснення</b> і тисніть на пункти ПДР — розуміння правила закриває одразу кілька схожих питань.</p>
@@ -744,8 +779,12 @@
       saveSettings();
       render();
     },
-    study() { startSession('study', studyQueue(pool(), newLeftToday()), 'Навчання'); },
-    'study-more'() { startSession('study', studyQueue(pool(), 10), 'Навчання'); },
+    review() { replaceSession('review', dueCards(pool()).slice(0, settings.session).map((q) => q.id), 'Повторення'); },
+    learn() {
+      const n = Math.min(newLeftToday(), settings.session);
+      replaceSession('learn', shuffled(newCards(pool()).map((q) => q.id)).slice(0, n), 'Нові питання');
+    },
+    'learn-extra'() { replaceSession('learn', shuffled(newCards(pool()).map((q) => q.id)).slice(0, settings.session), 'Нові питання'); },
     weak() {
       const t = today();
       const ids = pool().filter((q) => cards[q.id]).sort((a, b) => recall(a.id, t) - recall(b.id, t)).slice(0, 30).map((q) => q.id);
@@ -833,7 +872,7 @@
     if (!el) return;
     const key = el.dataset.set;
     let v = el.type === 'checkbox' ? el.checked : el.value;
-    if (key === 'newPerDay') v = +v;
+    if (key === 'newPerDay' || key === 'session') v = +v;
     if (key === 'retention') v = +v;
     settings[key] = v;
     saveSettings();
